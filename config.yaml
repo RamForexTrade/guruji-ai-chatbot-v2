@@ -1,0 +1,34 @@
+chatbot:
+  initial_questions:
+  - What aspect of life are you seeking guidance about? (relationships, spiritual
+    practice, emotional well-being, etc.)
+  - What is your current emotional state or challenge?
+  - Are you looking for general wisdom or specific guidance for a situation?
+  personality:
+    approach: spiritual guidance with practical wisdom
+    tone: compassionate and wise
+embeddings:
+  dimension: 1536
+  model: text-embedding-3-small
+model_provider:
+  default: groq
+  groq:
+    max_tokens: 1500
+    model: llama-3.3-70b-versatile
+    temperature: 0.7
+  openai:
+    max_tokens: 1500
+    model: gpt-4o-mini
+    temperature: 0.7
+rag:
+  chunk_overlap: 200
+  chunk_size: 1000
+  similarity_threshold: 0.7
+  top_k_results: 5
+ui:
+  subtitle: Wisdom from Sri Sri Ravi Shankar's Teachings
+  theme:
+    background_color: '#FFF8DC'
+    primary_color: '#FF8C00'
+    text_color: '#8B4513'
+  title: "🙏 JAI GURU DEV AI Chatbot"
