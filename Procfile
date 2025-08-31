@@ -1,0 +1,1 @@
+web: streamlit run chatbot.py --server.address 0.0.0.0 --server.port $PORT --theme.base light --theme.primaryColor '#FF8C00' --server.enableCORS false --server.enableXsrfProtection false
