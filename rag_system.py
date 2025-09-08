@@ -116,7 +116,7 @@ class RAGSystem:
             return yaml.safe_load(f)
     
     def setup_llm(self):
-        """Setup Language Model based on configuration"""
+        """Setup Language Model based on configuration with error handling for deprecated models"""
         provider = self.config['model_provider']['default']
         
         if provider == "openai":
@@ -128,11 +128,86 @@ class RAGSystem:
             )
         elif provider == "groq":
             model_config = self.config['model_provider']['groq']
-            self.llm = ChatGroq(
-                model=model_config['model'],
-                temperature=model_config['temperature'],
-                max_tokens=model_config['max_tokens']
-            )
+            
+            # Try primary model first
+            try:
+                print(f"🔧 Attempting to connect with model: {model_config['model']}")
+                self.llm = ChatGroq(
+                    model=model_config['model'],
+                    temperature=model_config['temperature'],
+                    max_tokens=model_config['max_tokens']
+                )
+                
+                # Test the connection with a simple query
+                test_response = self.llm.invoke("Hello")
+                print(f"✅ Successfully connected to {model_config['model']}")
+                
+            except Exception as e:
+                print(f"⚠️ Primary model {model_config['model']} failed: {e}")
+                
+                # Check if there's a fallback model in config
+                fallback_model = model_config.get('fallback_model')
+                if fallback_model:
+                    print(f"🔧 Trying fallback model: {fallback_model}")
+                    try:
+                        self.llm = ChatGroq(
+                            model=fallback_model,
+                            temperature=model_config['temperature'],
+                            max_tokens=model_config['max_tokens']
+                        )
+                        
+                        # Test the fallback connection
+                        test_response = self.llm.invoke("Hello")
+                        print(f"✅ Successfully connected to fallback model: {fallback_model}")
+                        
+                    except Exception as fallback_error:
+                        print(f"❌ Fallback model {fallback_model} also failed: {fallback_error}")
+                        
+                        # Try known working models as last resort
+                        working_models = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
+                        for model in working_models:
+                            print(f"🔧 Trying known working model: {model}")
+                            try:
+                                self.llm = ChatGroq(
+                                    model=model,
+                                    temperature=model_config['temperature'],
+                                    max_tokens=model_config['max_tokens']
+                                )
+                                
+                                # Test the connection
+                                test_response = self.llm.invoke("Hello")
+                                print(f"✅ Successfully connected to working model: {model}")
+                                break
+                                
+                            except Exception as model_error:
+                                print(f"❌ Model {model} failed: {model_error}")
+                                continue
+                        else:
+                            # If all models fail, raise the original error
+                            raise Exception(f"All Groq models failed. Original error: {e}")
+                else:
+                    # No fallback model specified, try known working models
+                    working_models = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
+                    for model in working_models:
+                        print(f"🔧 Trying known working model: {model}")
+                        try:
+                            self.llm = ChatGroq(
+                                model=model,
+                                temperature=model_config['temperature'],
+                                max_tokens=model_config['max_tokens']
+                            )
+                            
+                            # Test the connection
+                            test_response = self.llm.invoke("Hello")
+                            print(f"✅ Successfully connected to working model: {model}")
+                            break
+                            
+                        except Exception as model_error:
+                            print(f"❌ Model {model} failed: {model_error}")
+                            continue
+                    else:
+                        # If all models fail, raise the original error
+                        raise Exception(f"All Groq models failed. Original error: {e}")
         else:
             raise ValueError(f"Unsupported model provider: {provider}")
     
@@ -503,7 +578,7 @@ def test_openai_connection():
         return {"success": False, "error": f"OpenAI connection failed: {str(e)}"}
 
 def test_groq_connection():
-    """Test Groq API connection"""
+    """Test Groq API connection with fallback handling"""
     try:
         from dotenv import load_dotenv
         load_dotenv()
@@ -518,15 +593,33 @@ def test_groq_connection():
         
         model_config = config['model_provider']['groq']
         
-        # Test with a simple completion using the configured model
-        client = ChatGroq(
-            model=model_config['model'], 
-            max_tokens=10, 
-            temperature=0
-        )
-        response = client.invoke("Say 'Hello'")
-        
-        return {"success": True, "message": "Groq connection successful!", "response": response.content}
+        # Test with primary model first
+        try:
+            client = ChatGroq(
+                model=model_config['model'], 
+                max_tokens=10, 
+                temperature=0
+            )
+            response = client.invoke("Say 'Hello'")
+            return {"success": True, "message": f"Groq connection successful with {model_config['model']}!", "response": response.content}
+            
+        except Exception as primary_error:
+            # Try fallback model if available
+            fallback_model = model_config.get('fallback_model')
+            if fallback_model:
+                try:
+                    client = ChatGroq(
+                        model=fallback_model, 
+                        max_tokens=10, 
+                        temperature=0
+                    )
+                    response = client.invoke("Say 'Hello'")
+                    return {"success": True, "message": f"Groq connection successful with fallback model {fallback_model}!", "response": response.content}
+                    
+                except Exception as fallback_error:
+                    return {"success": False, "error": f"Both primary ({model_config['model']}) and fallback ({fallback_model}) models failed. Primary error: {primary_error}. Fallback error: {fallback_error}"}
+            else:
+                return {"success": False, "error": f"Primary model {model_config['model']} failed: {primary_error}"}
         
     except Exception as e:
         return {"success": False, "error": f"Groq connection failed: {str(e)}"}
