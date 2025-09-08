@@ -483,8 +483,18 @@ def test_openai_connection():
         if not api_key:
             return {"success": False, "error": "OpenAI API key not found in environment"}
         
+        # Load config to get the model
+        with open("config.yaml", 'r', encoding='utf-8') as f:
+            config = yaml.safe_load(f)
+        
+        model_config = config['model_provider']['openai']
+        
         # Test with a simple completion
-        client = ChatOpenAI(model="gpt-4o-mini", max_tokens=10, temperature=0)
+        client = ChatOpenAI(
+            model=model_config['model'], 
+            max_tokens=10, 
+            temperature=0
+        )
         response = client.invoke("Say 'Hello'")
         
         return {"success": True, "message": "OpenAI connection successful!", "response": response.content}
@@ -502,8 +512,18 @@ def test_groq_connection():
         if not api_key:
             return {"success": False, "error": "Groq API key not found in environment"}
         
-        # Test with a simple completion
-        client = ChatGroq(model="llama3-8b-8192", max_tokens=10, temperature=0)
+        # Load config to get the model
+        with open("config.yaml", 'r', encoding='utf-8') as f:
+            config = yaml.safe_load(f)
+        
+        model_config = config['model_provider']['groq']
+        
+        # Test with a simple completion using the configured model
+        client = ChatGroq(
+            model=model_config['model'], 
+            max_tokens=10, 
+            temperature=0
+        )
         response = client.invoke("Say 'Hello'")
         
         return {"success": True, "message": "Groq connection successful!", "response": response.content}
@@ -521,8 +541,12 @@ def test_embeddings_connection():
         if not api_key:
             return {"success": False, "error": "OpenAI API key not found for embeddings"}
         
+        # Load config to get the embeddings model
+        with open("config.yaml", 'r', encoding='utf-8') as f:
+            config = yaml.safe_load(f)
+        
         # Test embeddings
-        embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+        embeddings = OpenAIEmbeddings(model=config['embeddings']['model'])
         test_embedding = embeddings.embed_query("Hello world")
         
         return {"success": True, "message": f"Embeddings connection successful! (dimension: {len(test_embedding)})"}
