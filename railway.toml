@@ -22,9 +22,10 @@ STREAMLIT_SERVER_ENABLE_XSRF_PROTECTION = "false"
 # Application Configuration
 ENVIRONMENT = "production"
 
-# ChromaDB Configuration
+# ChromaDB Configuration for Railway
 CHROMA_DB_IMPL = "duckdb+parquet"
 ANONYMIZED_TELEMETRY = "false"
+CHROMA_DB_PATH = "/tmp/chroma_db"
 
 # Memory and Performance
 MALLOC_TRIM_THRESHOLD = "100000"

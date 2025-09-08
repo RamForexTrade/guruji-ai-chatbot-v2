@@ -19,6 +19,7 @@ from document_processor import DocumentProcessor, Teaching
 import hashlib
 import json
 import tempfile
+import shutil
 
 @dataclass
 class UserContext:
@@ -113,17 +114,53 @@ class RAGSystem:
             print(f"❌ Error initializing RAG system: {e}")
             raise
     
+    def _detect_readonly_filesystem(self, error_msg: str) -> bool:
+        """Detect if the error is related to read-only filesystem"""
+        readonly_indicators = [
+            "readonly", "read-only", "read only",
+            "permission denied", "permissions",
+            "1032", "attempt to write a readonly database",
+            "database is locked", "disk i/o error",
+            "unable to open database"
+        ]
+        
+        error_lower = error_msg.lower()
+        return any(indicator in error_lower for indicator in readonly_indicators)
+    
     def _get_writable_db_path(self) -> str:
         """Get a writable directory path for ChromaDB - Railway compatible"""
+        # Check for environment variable override first
+        env_db_path = os.getenv('CHROMA_DB_PATH')
+        if env_db_path:
+            try:
+                os.makedirs(env_db_path, exist_ok=True)
+                test_file = os.path.join(env_db_path, "write_test.tmp")
+                with open(test_file, 'w') as f:
+                    f.write("test")
+                os.remove(test_file)
+                print(f"📂 Using environment-specified database directory: {env_db_path}")
+                return env_db_path
+            except Exception as e:
+                print(f"⚠️ Cannot use environment-specified path {env_db_path}: {e}")
+        
         # Try different writable locations in order of preference
         possible_paths = [
             # Railway typically provides /tmp as writable
             "/tmp/chroma_db",
+            # Alternative tmp paths for different environments
+            "/var/tmp/chroma_db",
             # System temp directory
             os.path.join(tempfile.gettempdir(), "chroma_db"),
-            # Current directory as fallback
+            # User home directory if available
+            os.path.expanduser("~/chroma_db") if os.path.expanduser("~") != "~" else None,
+            # App directory fallback
+            os.path.join(os.getcwd(), "tmp", "chroma_db"),
+            # Current directory as last resort
             "./chroma_db"
         ]
+        
+        # Filter out None values
+        possible_paths = [p for p in possible_paths if p is not None]
         
         for path in possible_paths:
             try:
@@ -142,7 +179,39 @@ class RAGSystem:
         # If all fail, use current directory and hope for the best
         fallback_path = "./chroma_db"
         print(f"📂 Using fallback directory: {fallback_path}")
+        print("⚠️ Warning: This may not be writable in Railway deployment")
         return fallback_path
+    
+    def _get_chroma_settings(self) -> Settings:
+        """Get ChromaDB settings optimized for production deployment"""
+        # Check if we're in a production environment
+        is_production = (
+            os.getenv('ENVIRONMENT') == 'production' or 
+            os.getenv('RAILWAY_ENVIRONMENT') is not None or
+            os.getenv('PORT') is not None  # Common in Railway deployments
+        )
+        
+        if is_production:
+            print("🚀 Configuring ChromaDB for production environment")
+            
+            # Use settings that work better in constrained environments
+            settings = Settings(
+                chroma_db_impl="duckdb+parquet",
+                persist_directory=self.db_path,
+                anonymized_telemetry=False,
+                allow_reset=True,
+                is_persistent=True
+            )
+        else:
+            print("🔧 Configuring ChromaDB for development environment")
+            settings = Settings(
+                persist_directory=self.db_path,
+                anonymized_telemetry=False,
+                allow_reset=True,
+                is_persistent=True
+            )
+        
+        return settings
     
     def load_config(self) -> Dict[str, Any]:
         """Load configuration from YAML file"""
@@ -231,9 +300,12 @@ class RAGSystem:
             'embeddings_model': self.config['embeddings']['model']
         }
         
-        os.makedirs(self.db_path, exist_ok=True)
-        with open(self.metadata_file, 'w') as f:
-            json.dump(metadata, f, indent=2)
+        try:
+            os.makedirs(self.db_path, exist_ok=True)
+            with open(self.metadata_file, 'w') as f:
+                json.dump(metadata, f, indent=2)
+        except Exception as e:
+            print(f"⚠️ Could not save metadata: {e}")
     
     def _load_db_metadata(self) -> Dict[str, Any]:
         """Load database metadata"""
@@ -282,6 +354,119 @@ class RAGSystem:
         print("✅ Existing ChromaDB is up to date - will reuse it")
         return False
     
+    def _create_vectorstore_with_settings(self, documents: List[Document]) -> Chroma:
+        """Create vector store with proper settings and comprehensive error handling"""
+        
+        # Try with optimized settings first
+        try:
+            print("🔄 Attempting to create ChromaDB with optimized settings...")
+            chroma_settings = self._get_chroma_settings()
+            
+            # Create ChromaDB client with settings
+            client = chromadb.Client(chroma_settings)
+            
+            # Create vector store
+            vectorstore = Chroma.from_documents(
+                documents=documents,
+                embedding=self.embeddings,
+                persist_directory=self.db_path,
+                client=client
+            )
+            
+            print("✅ Successfully created ChromaDB with optimized settings")
+            return vectorstore
+            
+        except Exception as e:
+            error_msg = str(e)
+            print(f"❌ Error creating vector store with optimized settings: {error_msg}")
+            
+            # Check if this is a permissions/readonly error
+            if self._detect_readonly_filesystem(error_msg):
+                print("🔍 Detected filesystem permissions issue - trying alternatives...")
+                
+                # Try to clean up any partial creation
+                try:
+                    if os.path.exists(self.db_path):
+                        shutil.rmtree(self.db_path)
+                        print("🧹 Cleaned up partial database creation")
+                except Exception as cleanup_error:
+                    print(f"⚠️ Could not clean up: {cleanup_error}")
+                
+                # Try alternative writable path
+                alternative_paths = [
+                    "/tmp/chroma_alt",
+                    os.path.join(tempfile.gettempdir(), "chroma_alt"),
+                    f"./chroma_alt_{os.getpid()}"
+                ]
+                
+                for alt_path in alternative_paths:
+                    try:
+                        print(f"🔄 Trying alternative path: {alt_path}")
+                        os.makedirs(alt_path, exist_ok=True)
+                        
+                        # Test write permissions
+                        test_file = os.path.join(alt_path, "test_write.tmp")
+                        with open(test_file, 'w') as f:
+                            f.write("test")
+                        os.remove(test_file)
+                        
+                        # Update db_path and try again
+                        self.db_path = alt_path
+                        self.metadata_file = os.path.join(self.db_path, "db_metadata.json")
+                        
+                        vectorstore = Chroma.from_documents(
+                            documents=documents,
+                            embedding=self.embeddings,
+                            persist_directory=self.db_path
+                        )
+                        
+                        print(f"✅ Successfully created ChromaDB at alternative path: {alt_path}")
+                        return vectorstore
+                        
+                    except Exception as alt_error:
+                        print(f"❌ Alternative path {alt_path} failed: {alt_error}")
+                        continue
+                
+                # If all persistent options fail, try in-memory
+                print("🔄 All persistent storage options failed, trying in-memory database...")
+                try:
+                    vectorstore = Chroma.from_documents(
+                        documents=documents,
+                        embedding=self.embeddings
+                        # No persist_directory = in-memory only
+                    )
+                    print("✅ Created in-memory ChromaDB successfully")
+                    print("⚠️ WARNING: Database will not persist between restarts")
+                    return vectorstore
+                    
+                except Exception as memory_error:
+                    print(f"❌ Even in-memory database failed: {memory_error}")
+                    raise Exception(f"All ChromaDB creation methods failed. Last error: {memory_error}")
+            
+            else:
+                # Try basic creation without custom settings
+                print("🔄 Trying basic ChromaDB creation without custom settings...")
+                try:
+                    vectorstore = Chroma.from_documents(
+                        documents=documents,
+                        embedding=self.embeddings,
+                        persist_directory=self.db_path
+                    )
+                    print("✅ Successfully created basic ChromaDB")
+                    return vectorstore
+                    
+                except Exception as basic_error:
+                    print(f"❌ Basic creation also failed: {basic_error}")
+                    # Fall back to in-memory as last resort
+                    print("🔄 Falling back to in-memory database...")
+                    vectorstore = Chroma.from_documents(
+                        documents=documents,
+                        embedding=self.embeddings
+                    )
+                    print("✅ Created in-memory ChromaDB as final fallback")
+                    print("⚠️ WARNING: Database will not persist between restarts")
+                    return vectorstore
+    
     def load_and_process_documents(self):
         """Load and process all teachings from markdown files"""
         processor = DocumentProcessor(self.knowledge_base_path)
@@ -316,36 +501,17 @@ class RAGSystem:
                 )
                 documents.append(doc)
             
-            # Create new vector store with error handling for permissions
+            # Create new vector store with enhanced error handling
+            self.vectorstore = self._create_vectorstore_with_settings(documents)
+            print(f"✅ Created ChromaDB with {len(documents)} teachings")
+            
+            # Save metadata if possible
             try:
-                self.vectorstore = Chroma.from_documents(
-                    documents=documents,
-                    embedding=self.embeddings,
-                    persist_directory=self.db_path
-                )
-                print(f"✅ Created new ChromaDB with {len(documents)} teachings")
-                
-                # Save metadata
                 knowledge_hash = self._get_knowledge_base_hash()
                 self._save_db_metadata(len(documents), knowledge_hash)
-                
             except Exception as e:
-                print(f"❌ Error creating vector store: {e}")
-                # If permissions issue, try in-memory database as fallback
-                if "readonly" in str(e).lower() or "permission" in str(e).lower():
-                    print("🔄 Trying in-memory database as fallback...")
-                    try:
-                        self.vectorstore = Chroma.from_documents(
-                            documents=documents,
-                            embedding=self.embeddings
-                        )
-                        print(f"✅ Created in-memory ChromaDB with {len(documents)} teachings")
-                        print("⚠️ Note: Database will not persist between restarts")
-                    except Exception as memory_error:
-                        print(f"❌ Even in-memory database failed: {memory_error}")
-                        raise
-                else:
-                    raise
+                print(f"⚠️ Could not save metadata: {e}")
+                
         else:
             print("♻️ Loading existing ChromaDB...")
             
@@ -374,8 +540,15 @@ class RAGSystem:
                     print("✅ Loaded existing ChromaDB successfully")
                     
             except Exception as e:
-                print(f"❌ Error loading existing vector store: {e}")
-                print("🔄 Will try to recreate database...")
+                error_msg = str(e)
+                print(f"❌ Error loading existing vector store: {error_msg}")
+                
+                # Check if it's a permissions issue
+                if self._detect_readonly_filesystem(error_msg):
+                    print("🔍 Detected permissions issue with existing database")
+                    print("🔄 Will recreate database in writable location...")
+                else:
+                    print("🔄 Will try to recreate database...")
                 
                 # Fallback to creating new database
                 documents = []
@@ -397,27 +570,15 @@ class RAGSystem:
                     )
                     documents.append(doc)
                 
+                self.vectorstore = self._create_vectorstore_with_settings(documents)
+                print(f"✅ Recreated ChromaDB with {len(documents)} teachings")
+                
+                # Save metadata if possible
                 try:
-                    self.vectorstore = Chroma.from_documents(
-                        documents=documents,
-                        embedding=self.embeddings,
-                        persist_directory=self.db_path
-                    )
-                    print(f"✅ Recreated ChromaDB with {len(documents)} teachings")
-                    
-                    # Save metadata
                     knowledge_hash = self._get_knowledge_base_hash()
                     self._save_db_metadata(len(documents), knowledge_hash)
-                except Exception as recreate_error:
-                    print(f"❌ Recreation failed: {recreate_error}")
-                    # Final fallback to in-memory
-                    print("🔄 Using in-memory database as final fallback...")
-                    self.vectorstore = Chroma.from_documents(
-                        documents=documents,
-                        embedding=self.embeddings
-                    )
-                    print(f"✅ Created in-memory ChromaDB with {len(documents)} teachings")
-                    print("⚠️ Note: Database will not persist between restarts")
+                except Exception as e:
+                    print(f"⚠️ Could not save metadata: {e}")
     
     def setup_retrieval_chain(self):
         """Setup the retrieval QA chain"""
