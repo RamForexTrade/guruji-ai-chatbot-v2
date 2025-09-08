@@ -1,3 +1,8 @@
+import streamlit as st
+import os
+from rag_system import RAGSystem, UserContext
+
+class ChatbotApp:
     def __init__(self):
         self.config_path = "config.yaml"
         self.knowledge_base_path = "Knowledge_Base"
@@ -47,3 +52,6 @@
         
         # If all fail, use current directory and hope for the best
         return "./chroma_db"
+
+if __name__ == "__main__":
+    app = ChatbotApp()
