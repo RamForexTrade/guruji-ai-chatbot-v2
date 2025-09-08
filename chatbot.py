@@ -5,6 +5,7 @@ import yaml
 from rag_system import RAGSystem, UserContext
 from typing import Dict, Any
 import time
+import shutil
 
 # Load environment variables
 load_dotenv()
@@ -177,6 +178,34 @@ st.markdown("""
         background-color: #DAA520 !important;
         box-shadow: 0 4px 8px rgba(0,0,0,0.2) !important;
     }
+    
+    /* Database status styling */
+    .db-status-good {
+        background-color: #d4edda;
+        color: #155724;
+        padding: 10px;
+        border-radius: 5px;
+        border: 1px solid #c3e6cb;
+        margin: 5px 0;
+    }
+    
+    .db-status-warning {
+        background-color: #fff3cd;
+        color: #856404;
+        padding: 10px;
+        border-radius: 5px;
+        border: 1px solid #ffeaa7;
+        margin: 5px 0;
+    }
+    
+    .db-status-error {
+        background-color: #f8d7da;
+        color: #721c24;
+        padding: 10px;
+        border-radius: 5px;
+        border: 1px solid #f5c6cb;
+        margin: 5px 0;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -184,6 +213,7 @@ class ChatbotUI:
     def __init__(self):
         self.config_path = "config.yaml"
         self.knowledge_base_path = "Knowledge_Base"
+        self.db_path = "./chroma_db"
         
         # Initialize session state
         if 'rag_system' not in st.session_state:
@@ -196,11 +226,69 @@ class ChatbotUI:
             st.session_state.chat_history = []
         if 'system_initialized' not in st.session_state:
             st.session_state.system_initialized = False
+        if 'db_force_recreate' not in st.session_state:
+            st.session_state.db_force_recreate = False
+    
+    def get_db_status(self):
+        """Get current database status"""
+        if not os.path.exists(self.db_path):
+            return "missing", "Database directory not found"
+        
+        db_file = os.path.join(self.db_path, "chroma.sqlite3")
+        metadata_file = os.path.join(self.db_path, "db_metadata.json")
+        
+        if not os.path.exists(db_file):
+            return "missing", "Database file not found"
+        
+        if not os.path.exists(metadata_file):
+            return "warning", "Database exists but no metadata file"
+        
+        try:
+            import json
+            with open(metadata_file, 'r') as f:
+                metadata = json.load(f)
+            
+            num_docs = metadata.get('num_documents', 0)
+            if num_docs == 0:
+                return "warning", "Database exists but no documents"
+            
+            return "good", f"Database ready with {num_docs} teachings"
+        except Exception as e:
+            return "error", f"Database corrupted: {str(e)}"
+    
+    def clear_database(self):
+        """Clear the ChromaDB database"""
+        try:
+            if os.path.exists(self.db_path):
+                shutil.rmtree(self.db_path)
+                st.success("✅ Database cleared successfully!")
+                # Reset system to force recreation
+                st.session_state.system_initialized = False
+                st.session_state.rag_system = None
+                st.session_state.db_force_recreate = True
+                return True
+            else:
+                st.info("ℹ️ No database found to clear.")
+                return True
+        except Exception as e:
+            st.error(f"❌ Error clearing database: {str(e)}")
+            return False
+    
+    def force_recreate_database(self):
+        """Force recreation of the database"""
+        st.session_state.db_force_recreate = True
+        self.clear_database()
     
     def initialize_system(self):
         """Initialize the RAG system"""
         try:
             with st.spinner("🙏 Initializing JAI GURU DEV AI... Please wait while I connect to the divine wisdom..."):
+                # If force recreate is set, clear the database first
+                if st.session_state.db_force_recreate:
+                    if os.path.exists(self.db_path):
+                        shutil.rmtree(self.db_path)
+                    st.session_state.db_force_recreate = False
+                
                 st.session_state.rag_system = RAGSystem(
                     config_path=self.config_path,
                     knowledge_base_path=self.knowledge_base_path
@@ -237,6 +325,63 @@ class ChatbotUI:
                     yaml.dump(config, f)
                 st.session_state.system_initialized = False  # Reinitialize system
                 st.rerun()
+            
+            st.markdown("---")
+            st.markdown("## 🗄️ Database Management")
+            
+            # Database status
+            status, message = self.get_db_status()
+            if status == "good":
+                st.markdown(f'<div class="db-status-good">✅ {message}</div>', unsafe_allow_html=True)
+            elif status == "warning":
+                st.markdown(f'<div class="db-status-warning">⚠️ {message}</div>', unsafe_allow_html=True)
+            elif status == "error":
+                st.markdown(f'<div class="db-status-error">❌ {message}</div>', unsafe_allow_html=True)
+            else:
+                st.markdown(f'<div class="db-status-warning">📂 {message}</div>', unsafe_allow_html=True)
+            
+            # Database management buttons
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                if st.button("🗑️ Clear DB", 
+                           use_container_width=True,
+                           help="Clear the entire database. Will be recreated on next use."):
+                    if st.session_state.get('confirm_clear_db', False):
+                        if self.clear_database():
+                            st.session_state.confirm_clear_db = False
+                    else:
+                        st.session_state.confirm_clear_db = True
+                        st.warning("⚠️ Click again to confirm database clearing!")
+            
+            with col2:
+                if st.button("🔄 Recreate", 
+                           use_container_width=True,
+                           help="Force recreation of database with current knowledge base"):
+                    if st.session_state.get('confirm_recreate_db', False):
+                        self.force_recreate_database()
+                        st.session_state.confirm_recreate_db = False
+                        st.rerun()
+                    else:
+                        st.session_state.confirm_recreate_db = True
+                        st.warning("⚠️ Click again to confirm database recreation!")
+            
+            # Reset confirmation states when user does something else
+            if st.session_state.get('confirm_clear_db', False) or st.session_state.get('confirm_recreate_db', False):
+                if st.button("❌ Cancel", use_container_width=True):
+                    st.session_state.confirm_clear_db = False
+                    st.session_state.confirm_recreate_db = False
+                    st.rerun()
+            
+            # Database info
+            if os.path.exists(self.db_path):
+                try:
+                    db_size = sum(os.path.getsize(os.path.join(self.db_path, f)) 
+                                for f in os.listdir(self.db_path) 
+                                if os.path.isfile(os.path.join(self.db_path, f)))
+                    st.caption(f"📊 Database size: {db_size / 1024 / 1024:.2f} MB")
+                except:
+                    pass
             
             st.markdown("---")
             st.markdown("## 🔌 API Connection Tests")
