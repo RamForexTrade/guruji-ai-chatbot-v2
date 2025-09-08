@@ -14,8 +14,11 @@ model_provider:
   default: groq
   groq:
     max_tokens: 1500
+    # Updated to use the current available Groq models
     model: llama-3.3-70b-versatile
     temperature: 0.7
+    # Fallback model in case primary is unavailable
+    fallback_model: llama-3.1-8b-instant
   openai:
     max_tokens: 1500
     model: gpt-4o-mini
